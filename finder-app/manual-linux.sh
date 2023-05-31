@@ -3,19 +3,9 @@
 # Author: Siddhant Jajoo.
 
 set -e
+set -u
 
-OUTDIR=$1
-
-if [ -z "${OUTDIR}" ]; then
-    OUTDIR=/tmp/aeld
-    echo "No outdir specified, using ${OUTDIR}"
-fi
-
-#colors for debug msgs
-# red=$(tput setaf 1)
-# green=$(tput setaf 2)
-# reset=$(tput sgr0)
-
+OUTDIR=/tmp/aeld
 KERNEL_REPO=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
 KERNEL_VERSION=v5.1.10
 BUSYBOX_VERSION=1_33_1
@@ -23,11 +13,12 @@ FINDER_APP_DIR=$(realpath $(dirname $0))
 ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
 
-if [ $# -lt 1 ]; then
-    echo "Using default directory ${OUTDIR} for output"
+if [ $# -lt 1 ]
+then
+	echo "Using default directory ${OUTDIR} for output"
 else
-    OUTDIR=$1
-    echo "Using passed directory ${OUTDIR} for output"
+	OUTDIR=$1
+	echo "Using passed directory ${OUTDIR} for output"
 fi
 
 mkdir -p ${OUTDIR}
@@ -35,125 +26,161 @@ mkdir -p ${OUTDIR}
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
     #Clone only if the repository does not exist.
-    echo "CLONING GIT LINUX STABLE VERSION ${KERNEL_VERSION} IN ${OUTDIR}"
-    git clone ${KERNEL_REPO} --depth 1 --single-branch --branch ${KERNEL_VERSION}
+	echo "CLONING GIT LINUX STABLE VERSION ${KERNEL_VERSION} IN ${OUTDIR}"
+	git clone ${KERNEL_REPO} --depth 1 --single-branch --branch ${KERNEL_VERSION}
 fi
 if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     cd linux-stable
     echo "Checking out version ${KERNEL_VERSION}"
     git checkout ${KERNEL_VERSION}
-    #fix kernel build issue
-    sed -i '/YYLTYPE yylloc/d' scripts/dtc/dtc-lexer.l
 
-    # Add kernel build steps here
-    echo " cleaning kernel repo  "
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper # deep clean
-    echo " **************** creating kernel defcofing ****************  "
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig # defconfig
-    if [ $? -ne 0 ]; then
-        echo "failed to create kernel defconfig "
-        exit $?
-    fi
+	# Fix for:
+	# scripts/dtc/dtc-parser.tab.o:(.bss+0x20): multiple definition of `yylloc';
+	# scripts/dtc/dtc-lexer.lex.o:(.bss+0x0): first defined here
+	sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.l
 
-    echo " **************** building kernel image****************  "
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all -j$(nproc) # vmlinux
-    if [ $? -ne 0 ]; then
-        echo " failed to build kernel  "
-        exit $?
-    fi
-    # commanded for now
-    # echo " **************** building kernel modules ****************  "
-    # make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules #modules
-    # echo " **************** building device trees ****************  "
-    # make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs # device trees
+    # TODO: Add your kernel build steps here
+	# clean
+	echo "Cleaning kernel build mrproper"
+	make ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE} mrproper
+	# defconfig "virt" is default no arg
+	echo "Setting up default config for target virt(default)"
+	make ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE} defconfig
+	# build the kernel 
+	echo "Building kernel..."
+	make -j4 ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE} all
+	# Build kernel mods
+	echo "Building kernel modules..."
+	make ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE} modules
+	# Build device tree
+	echo "Bulding device tree..."
+	make ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE} dtbs
 fi
 
 echo "Adding the Image in outdir"
-cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${OUTDIR}
+cd $OUTDIR
+cp -a linux-stable/arch/arm64/boot/Image ./
+
 echo "Creating the staging directory for the root filesystem"
-cd "$OUTDIR"
-if [ -d "${OUTDIR}/rootfs" ]; then
-    echo "Deleting rootfs directory at ${OUTDIR}/rootfs and starting over"
-    sudo rm -rf ${OUTDIR}/rootfs
+if [ -d "${OUTDIR}/rootfs" ]
+then
+	echo "Deleting rootfs directory at ${OUTDIR}/rootfs and starting over"
+    sudo rm  -rf ${OUTDIR}/rootfs
 fi
 
-# Create necessary base directories
-mkdir -p rootfs
+# TODO: Create necessary base directories
+ROOTFS_DIR=${OUTDIR}/rootfs
+
+# Create the empty rootfs staging
+mkdir ${ROOTFS_DIR}
+
+# Create the Filesystem Hierarchy Standard (HFS) dirs
 cd rootfs
-mkdir -p bin sbin dev etc home sys tmp usr var lib lib64 proc
-mkdir -p usr/bin usr/sbin usr/lib var/log
+mkdir bin dev etc home lib lib64 proc sbin sys tmp usr var
+mkdir usr/bin usr/lib usr/sbin
+mkdir -p /var/log
 
 cd "$OUTDIR"
-if [ ! -d "${OUTDIR}/busybox" ]; then
-    git clone git://busybox.net/busybox.git
+if [ ! -d "${OUTDIR}/busybox" ]
+then
+git clone git://busybox.net/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
-
+    # TODO:  Configure busybox
+	make distclean
+	make defconfig
 else
     cd busybox
-
 fi
 
-if [ ! -f busybox ]; then
-    #  Configure busybox
-    echo " **************** cleaning busybox repo ****************  "
-    # make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} distclean # deep clean
-    echo " **************** creating busybox defcofing ****************  "
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig # defconfig
-    if [ $? -ne 0 ]; then
-        echo " failed to create busybox defcofing  "
-        exit $?
+
+# TODO: Make and install busybox
+echo -e "Make and install busybox"
+sudo env "PATH=$PATH" make ARCH=arm CROSS_COMPILE=${CROSS_COMPILE} CONFIG_PREFIX=${ROOTFS_DIR} install
+
+echo "Copying busybox library dependencies to rootfs"
+cd ${ROOTFS_DIR}
+
+# Cross-compile sysroot dir
+CCSYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
+
+# Show dependencies
+${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
+${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
+
+# Interpreter / LIBS dependecies
+REQ_INTRP=$(${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter" | awk '{ gsub(/\[|\]/,"",$NF); print $NF}')
+REQ_LIBS=$(${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library" | awk '{ gsub(/\[|\]/,"",$NF); print $NF}')
+
+# TODO: Add library dependencies to rootfs
+for intrp in $REQ_INTRP
+do
+    echo "intrp: $intrp"
+	intrp=$(basename ${intrp})
+	LIB_SRC=$(find ${CCSYSROOT} -name $intrp)
+	LIB_TGT=$(realpath --no-symlinks --relative-to=$CCSYSROOT $LIB_SRC)
+	
+	echo "Copy $LIB_SRC to $LIB_TGT"
+	cp -a $LIB_SRC $LIB_TGT
+	
+    if [ -L $LIB_TGT ]; then
+		LNK_SRC=$(readlink -f $LIB_SRC)
+	    LNK_TGT=$(realpath --relative-to=$CCSYSROOT $LIB_SRC)
+		echo "Copy link: $LNK_SRC to $LNK_TGT"
+		cp -a $LNK_SRC $LNK_TGT
     fi
-    #  Make and install busybox
-    echo " **************** building busybox ****************  "
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} -j$(nproc)
-    if [ $? -ne 0 ]; then
-        echo " failed to build busybox  "
-        exit $?
-    fi
-fi
-echo " **************** installing busybox ****************  "
-make CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install
-if [ $? -ne 0 ]; then
-    echo " failed to install busybox  "
-    exit $?
-fi
-# Add library dependencies to rootfs
-echo "Library dependencies "
-CROSS_COMPILER_PATH=$(${CROSS_COMPILE}gcc -print-sysroot)
-PROG_INTERPERTER_LIB=$(${CROSS_COMPILE}readelf -a busybox | grep -oP "(?<=program interpreter: /lib/).*(?=])") # getting lib name
-SHARED_LIBS=$(${CROSS_COMPILE}readelf -a busybox | grep -oP "Shared library:\K[^;]*" | tr -d "[]")
-echo $PROG_INTERPERTER_LIB
-for LIB_NAME in $SHARED_LIBS; do
-    echo $LIB_NAME
-    LIB_PATH=$(find ${CROSS_COMPILER_PATH} -iname "${LIB_NAME}")
-    cp ${LIB_PATH} ${OUTDIR}/rootfs/lib64
 done
 
-PROG_INTERPERTER_LIB_PATH=$(find ${CROSS_COMPILER_PATH} -iname "${PROG_INTERPERTER_LIB}")
 
-cp ${PROG_INTERPERTER_LIB_PATH} ${OUTDIR}/rootfs/lib/
+for lib in $REQ_LIBS
+do
+    lib=$(basename ${lib})
+	LIB_SRC=$(find ${CCSYSROOT} -name $lib)
+	LIB_TGT=$(realpath --no-symlinks --relative-to=$CCSYSROOT $LIB_SRC)
+	echo "Copy $LIB_SRC to $LIB_TGT"
+	cp -a $LIB_SRC $LIB_TGT
 
-# Make device nodes
-sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
-sudo mknod -m 666 ${OUTDIR}/rootfs/dev/console c 5 1
+	LNKTGT=$(realpath --relative-to=$CCSYSROOT $LIB_SRC)
+	
+    # If src is link, copy link target locally
+    if [ -L $LIB_TGT ]; then
+		LNK_SRC=$(readlink -f $LIB_SRC)
+	    LNK_TGT=$(realpath --relative-to=$CCSYSROOT $LIB_SRC)
+		echo "Copy link: $LNK_SRC to $LNK_TGT"
+		cp -a $LNK_SRC $LNK_TGT
+    fi
+done
+cd ${ROOTFS_DIR}
 
-# Clean and build the writer utility
+# TODO: Make device nodes
+echo -e "Creating device nodes"
+sudo mknod -m 666 dev/null c 1 3
+sudo mknod -m 666 dev/char0 c 5 2
+
+# TODO: Clean and build the writer utility
+echo -e "Cleaning and building writer utility"
 cd ${FINDER_APP_DIR}
-echo "  **************** building writer app ****************  "
-make clean
+make CROSS_COMPILE=${CROSS_COMPILE} clean
 make CROSS_COMPILE=${CROSS_COMPILE}
-# Copy the finder related scripts and executables to the /home directory
-# on the target rootfs
-cp writer finder.sh finder-test.sh autorun-qemu.sh ${OUTDIR}/rootfs/home
-mkdir -p ${OUTDIR}/rootfs/home/conf
-cp conf/username.txt conf/assignment.txt ${OUTDIR}/rootfs/home/conf
 
-#Chown the root directory
-sudo chown -R root:root ${OUTDIR}/rootfs
-# Create initramfs.cpio.gz
-cd ${OUTDIR}/rootfs
-echo "  **************** creating initramfs.cpio.gz ****************  "
-find . | cpio --create --verbose --format newc --owner root:root >${OUTDIR}/initramfs.cpio
-cd ${OUTDIR}
+# TODO: Copy the finder related scripts and executables to the /home directory
+# on the target rootfs
+# Copy your finder.sh, conf/username.txt and (modified as described in step 1 above)
+# finder-test.sh scripts from Assignment 2 into the outdir/rootfs/home directory 
+cp -a $FINDER_APP_DIR/writer $ROOTFS_DIR/home/
+echo -e "Copy finder app dir to rootfs/home"
+cp -a $FINDER_APP_DIR/finder.sh $ROOTFS_DIR/home/
+mkdir $ROOTFS_DIR/home/conf
+cp -a $FINDER_APP_DIR/conf/username.txt $ROOTFS_DIR/home/conf/
+cp -a $FINDER_APP_DIR/finder-test.sh $ROOTFS_DIR/home/
+cp -a $FINDER_APP_DIR/autorun-qemu.sh $ROOTFS_DIR/home/
+
+# TODO: Chown the root directory
+echo -e "Chaning owner of rootfs dir to root"
+sudo chown -R root:root ${ROOTFS_DIR}
+
+# TODO: Create initramfs.cpio.gz
+cd $ROOTFS_DIR
+find . | cpio -H newc -ov --owner root:root > ../initramfs.cpio
+cd ..
 gzip -f initramfs.cpio
